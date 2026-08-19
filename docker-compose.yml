@@ -1,0 +1,411 @@
+# Permissioned Knowledge Graph — local stack.
+#
+# Everyday use:
+#   docker compose up -d                      # migrate, then long-running services
+#   docker compose --profile seed run --rm seeder
+#   docker compose --profile admin run --rm reset    # DESTRUCTIVE
+
+x-common-env: &common-env
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  POSTGRES_DB: ${POSTGRES_DB}
+  POSTGRES_HOST: ${POSTGRES_HOST}
+  POSTGRES_PORT: ${POSTGRES_PORT}
+  REDIS_HOST: ${REDIS_HOST}
+  REDIS_PORT: ${REDIS_PORT}
+  NUM_PARTITIONS: ${NUM_PARTITIONS}
+  LOG_LEVEL: ${LOG_LEVEL}
+  PYTHONUNBUFFERED: "1"
+  # Compose DNS. Hosts talking to the published port set EMBED_URL themselves.
+  EMBED_URL: http://embed:8080
+
+x-python-service: &python-service
+  build:
+    context: .
+    dockerfile: docker/python.Dockerfile
+  image: pkg/python-service:dev
+  # Source is bind-mounted so edits land without a rebuild. Data directories are
+  # named volumes only — never bind-mount PGDATA from this OneDrive-synced path.
+  volumes:
+    - ./src:/app/src:ro
+  environment: *common-env
+  restart: unless-stopped
+
+x-depends-ready: &depends-ready
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  migrate:
+    condition: service_completed_successfully
+
+services:
+  # ---------------------------------------------------------------- infra ---
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_HOST_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    # appendonly covers both the work streams and the cache/rate-limit buckets.
+    # everysec can lose up to 1s on a hard crash; acceptable, since the sources
+    # remain the source of truth and pollers re-emit.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "${REDIS_HOST_PORT}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  # BGE-small-en-v1.5. Chunk + query embed over HTTP so torch never lands in
+  # the poller/worker images. First boot downloads weights into embed-models;
+  # later boots reuse the volume. Named volume, not a bind mount — this path
+  # lives under OneDrive and bind-mounting model shards from there is a bad time.
+  embed:
+    build:
+      context: .
+      dockerfile: docker/embed.Dockerfile
+    image: pkg/embed:dev
+    volumes:
+      - ./src:/app/src:ro
+      - embed-models:/models
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL}
+      PYTHONUNBUFFERED: "1"
+      HF_HOME: /models
+      EMBED_MODEL: BAAI/bge-small-en-v1.5
+    ports:
+      - "${EMBED_HOST_PORT:-18080}:8080"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c",
+         "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 180s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------ one-shots ---
+  # Idempotent schema DDL. Safe on every boot; everything depends on it.
+  migrate:
+    <<: *python-service
+    command: ["python", "-m", "migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  # DESTRUCTIVE. Drops the schema and FLUSHDBs Redis, then re-migrates.
+  # Profile-gated so it can never run as part of a plain `compose up`.
+  reset:
+    <<: *python-service
+    command: ["python", "-m", "migrate", "--reset"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["admin"]
+
+  # Truncates graph tables only and re-normalizes from raw_payloads.
+  # No API calls — this is the iteration loop.
+
+  # App user administration. Creates the identity that logs in and gives it a
+  # membership edge into every mirrored identity sharing its email, so it
+  # inherits their grants:
+  #   docker compose --profile admin run --rm identity   #     link --email alice@acme.com --name "Alice" [--dry-run]
+  #   docker compose --profile admin run --rm identity show --email alice@acme.com
+  #
+  # Deliberately an operator action rather than something ingestion does: email
+  # is a self-asserted profile field in every one of these sources, so matching
+  # on it is a judgement about people the operator knows, not a rule the system
+  # should apply on its own.
+  identity:
+    <<: *python-service
+    entrypoint: ["python", "-m", "identity"]
+    command: ["--help"]
+    depends_on: *depends-ready
+    restart: "no"
+    profiles: ["admin"]
+
+  # Generates synthetic source-side data, then enqueues reason=backfill work
+  # items so the real worker path processes them end to end.
+  seeder:
+    <<: *python-service
+    command: ["python", "-m", "seeder"]
+    # Same key file as the poller, but the seeder asks it for a write scope.
+    # Spelled out because a YAML merge key replaces the anchor's volume list
+    # rather than appending to it.
+    volumes:
+      - ./src:/app/src:ro
+      - ${DRIVE_KEY_FILE:-./docker/no-drive-key.json}:/run/secrets/drive-sa.json:ro
+    environment:
+      <<: *common-env
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/drive-sa.json
+      DRIVE_IDS: ${DRIVE_IDS}
+      NOTION_TOKEN: ${NOTION_TOKEN}
+      NOTION_VERSION: ${NOTION_VERSION}
+      # Notion fixtures need a root page a human created and connected: an
+      # internal integration cannot create workspace-level pages at all.
+      NOTION_ROOT_PAGE_ID: ${NOTION_ROOT_PAGE_ID}
+      # Same bot token as the poller. Channel create and chat.postMessage need
+      # scopes the ingest path does not (channels:manage, groups:write, chat:write).
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+    depends_on: *depends-ready
+    restart: "no"
+    profiles: ["seed"]
+
+  # ---------------------------------------------------------- long-running ---
+  # All three sources in one container: Slack via Socket Mode (long-lived
+  # WebSocket), Notion and Drive on watermark/pageToken interval loops. Each runs
+  # as an independently supervised asyncio task so one source failing does not
+  # take the other two down.
+  poller:
+    <<: *python-service
+    command: ["python", "-m", "poller"]
+    # Spelled out rather than inherited: a YAML merge key replaces the anchor's
+    # list instead of appending to it, so naming any volume here drops ./src.
+    volumes:
+      - ./src:/app/src:ro
+      - ${DRIVE_KEY_FILE:-./docker/no-drive-key.json}:/run/secrets/drive-sa.json:ro
+    environment:
+      <<: *common-env
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
+      SLACK_POLL_INTERVAL_SECONDS: ${SLACK_POLL_INTERVAL_SECONDS}
+      SLACK_INCLUDE_PRIVATE: ${SLACK_INCLUDE_PRIVATE}
+      # Path inside the container, which is why it is a constant here and the
+      # host path lives in DRIVE_KEY_FILE.
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/drive-sa.json
+      DRIVE_IDS: ${DRIVE_IDS}
+      DRIVE_POLL_INTERVAL_SECONDS: ${DRIVE_POLL_INTERVAL_SECONDS}
+      # One credential covers every Notion endpoint — there is no second token
+      # like Slack's app token, and the API version is pinned, not negotiated.
+      NOTION_TOKEN: ${NOTION_TOKEN}
+      NOTION_VERSION: ${NOTION_VERSION}
+      NOTION_POLL_INTERVAL_SECONDS: ${NOTION_POLL_INTERVAL_SECONDS}
+      NOTION_RECONCILE_EVERY: ${NOTION_RECONCILE_EVERY}
+    # Redis only, deliberately. Connectors never write Postgres — workers own
+    # every DB write so one transaction covers raw_events, nodes, grants, and
+    # edges together. Not depending on the schema also means a Postgres outage
+    # cannot stall Socket Mode, whose events Slack never replays; the poller
+    # keeps filling the stream and workers drain it when the DB returns.
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # One worker per partition. Compose --scale gives identical containers and
+  # cannot assign ordinals, so partitions are declared explicitly.
+  # CONSUMER_NAME must be stable across restarts (w0, not a UUID) or a restarted
+  # container abandons its own pending entries under a name nothing will claim.
+  # SEMANTIC_ENABLED here decides whether an applied node raises an extraction
+  # job. The flag is read on both sides deliberately: turning it off stops the
+  # queue filling as well as draining, rather than accumulating work nothing
+  # will consume.
+  worker-0:
+    <<: *python-service
+    command: ["python", "-m", "worker"]
+    environment:
+      <<: *common-env
+      PARTITION: "0"
+      CONSUMER_NAME: "w0"
+      SEMANTIC_ENABLED: ${SEMANTIC_ENABLED:-false}
+    depends_on: *depends-ready
+
+  worker-1:
+    <<: *python-service
+    command: ["python", "-m", "worker"]
+    environment:
+      <<: *common-env
+      PARTITION: "1"
+      CONSUMER_NAME: "w1"
+      SEMANTIC_ENABLED: ${SEMANTIC_ENABLED:-false}
+    depends_on: *depends-ready
+
+  # Re-offers every document whose extraction watermark is behind, once, then
+  # exits. This is what an ontology change calls for: publish the new config,
+  # reset `semantic_version`, run this. It is deliberately not a background loop
+  # — the ingest worker's enqueue is idempotent and repairs a lost publish on
+  # redelivery, so nothing needs a republisher racing the consumer.
+  semantic-backfill:
+    <<: *python-service
+    command: ["python", "-m", "semantic", "--backfill"]
+    environment:
+      <<: *common-env
+      SEMANTIC_ENABLED: ${SEMANTIC_ENABLED:-false}
+    depends_on: *depends-ready
+    restart: "no"
+    profiles: ["admin"]
+
+  # Asserts the permission model against whatever is currently seeded. Read-only.
+  verify:
+    <<: *python-service
+    command: ["python", "/app/tests/verify_retrieval.py"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    depends_on: *depends-ready
+    restart: "no"
+    profiles: ["verify"]
+
+  # Semantic layer and action catalog, against the real database with a scripted
+  # model. Builds and tears down its own principals and channels, so it asserts
+  # exact permission outcomes rather than whatever the seed happens to contain.
+  verify-semantic:
+    <<: *python-service
+    command: ["python", "/app/tests/verify_semantic.py"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    depends_on: *depends-ready
+    restart: "no"
+    profiles: ["verify"]
+
+  # The write layer: the catalog, the level checks, and plan validation, all
+  # against the real database. Nothing is sent to Slack, Drive, or Notion — the
+  # suite runs plans with dry_run, which is the same path a live invocation
+  # takes minus the last inch. Needs ACTIONS_ENABLED=true, since what it mostly
+  # asserts is what the runner refuses.
+  verify-actions:
+    <<: *python-service
+    command: ["python", "/app/tests/verify_actions.py"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    depends_on: *depends-ready
+    restart: "no"
+    profiles: ["verify"]
+
+  # The compound-question demo: one person, two facts, two audiences, and the
+  # same query answered differently. Seeds and cleans up its own fixtures.
+  verify-compound:
+    <<: *python-service
+    command: ["python", "/app/tests/verify_compound.py"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    depends_on: *depends-ready
+    restart: "no"
+    profiles: ["verify"]
+
+  # Drives the orchestrator and walkers with a scripted model against the real
+  # database — everything but the model call is the code that ships. Needs no
+  # ANTHROPIC_API_KEY.
+  verify-agent:
+    <<: *python-service
+    command: ["python", "/app/tests/verify_agent_loop.py"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    depends_on: *depends-ready
+    restart: "no"
+    profiles: ["verify"]
+
+  # Turns ingested documents into inferred entities and edges. Off unless
+  # SEMANTIC_ENABLED is set: extraction spends a model call per document, so it
+  # is opt-in rather than something a plain `compose up` starts billing for.
+  # One replica — the Anthropic rate limit is the constraint, not Postgres.
+  semantic:
+    <<: *python-service
+    command: ["python", "-m", "semantic"]
+    environment:
+      <<: *common-env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SEMANTIC_ENABLED: ${SEMANTIC_ENABLED:-false}
+      SEMANTIC_MODEL: ${SEMANTIC_MODEL:-claude-sonnet-5}
+      SEMANTIC_EFFORT: ${SEMANTIC_EFFORT:-low}
+      SEMANTIC_CONCURRENCY: ${SEMANTIC_CONCURRENCY:-4}
+      SEMANTIC_MAX_TURNS: ${SEMANTIC_MAX_TURNS:-8}
+      SEMANTIC_CONSUMER: "sem0"
+      # Extraction can run against OpenAI instead, for evaluating the loop
+      # without an Anthropic key. A shim, not a second supported backend —
+      # see src/agent/openai_client.py.
+      SEMANTIC_PROVIDER: ${SEMANTIC_PROVIDER:-anthropic}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    depends_on: *depends-ready
+
+  # Keeps node_chunk in step with node. Reads entity ids off stream:embed,
+  # re-reads current state from Postgres, and wipes-and-rewrites that node's
+  # passages. One replica: the work is a delete plus an insert per node and the
+  # BGE service in front of it is the actual bottleneck.
+  embed-writer:
+    <<: *python-service
+    command: ["python", "-m", "embed.writer"]
+    environment:
+      <<: *common-env
+      EMBED_CONSUMER: "ew0"
+    depends_on:
+      <<: *depends-ready
+      embed:
+        condition: service_healthy
+
+  # Single replica, so the port is published directly. Add a proxy in front only
+  # when this goes to 2+ replicas — Compose DNS round-robin is not balancing.
+  api:
+    <<: *python-service
+    command:
+      ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    # The Anthropic key is scoped to this service alone. Pollers and workers do
+    # no inference and have no reason to hold a credential that can spend money.
+    environment:
+      <<: *common-env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-}
+      AGENT_DEMO_IDENTITIES: ${AGENT_DEMO_IDENTITIES:-}
+      AGENT_MAX_TURNS: ${AGENT_MAX_TURNS:-8}
+      AGENT_MAX_WALKERS: ${AGENT_MAX_WALKERS:-4}
+      AGENT_MAX_NODES: ${AGENT_MAX_NODES:-60}
+      # Write credentials, and the switch that decides whether they are usable.
+      # Present but inert while ACTIONS_ENABLED is false, which is the default.
+      ACTIONS_ENABLED: ${ACTIONS_ENABLED:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      NOTION_TOKEN: ${NOTION_TOKEN}
+      NOTION_VERSION: ${NOTION_VERSION}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/drive-sa.json
+    volumes:
+      - ./src:/app/src:ro
+      - ${DRIVE_KEY_FILE:-./docker/no-drive-key.json}:/run/secrets/drive-sa.json:ro
+    ports:
+      - "${API_HOST_PORT}:8000"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c",
+         "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on: *depends-ready
+
+volumes:
+  pgdata:
+  redisdata:
+  embed-models:

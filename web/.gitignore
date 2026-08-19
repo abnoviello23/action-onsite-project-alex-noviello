@@ -1,0 +1,6 @@
+node_modules/
+dist/
+
+# Local client config; names real identities.
+.env.local
+.env.*.local

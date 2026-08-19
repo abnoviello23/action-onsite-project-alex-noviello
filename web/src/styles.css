@@ -1,0 +1,1224 @@
+/*
+ * Chrome around the canvas. Every colour is a custom property published by
+ * theme.js, so the canvas and the DOM are never two versions of the same
+ * palette drifting apart.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--plane);
+  color: var(--textPrimary);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.app {
+  display: grid;
+  height: 100%;
+  min-height: 0;
+}
+
+/* The canvas needs its three columns; the chat is one centred column. The nav
+   strip is common to both and owns the first grid column. */
+.app-graph {
+  grid-template-columns: 46px 300px 1fr auto;
+  grid-template-rows: 100%;
+}
+
+.app-chat {
+  grid-template-columns: 46px 1fr;
+  grid-template-rows: 100%;
+}
+
+/* ----------------------------------------------------------------- nav -- */
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0;
+  background: var(--plane);
+  border-right: 1px solid var(--hairline);
+}
+
+.nav-tab,
+.nav-theme {
+  /* Vertical text: the strip is 46px wide and these are the only things in it,
+     so turning the labels sideways buys the canvas its width back. */
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  padding: 12px 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--textMuted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.nav-tab:hover,
+.nav-theme:hover {
+  color: var(--textPrimary);
+  border-color: var(--hairline);
+}
+
+.nav-tab.is-active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.nav-theme {
+  margin-top: auto;
+}
+
+/* ------------------------------------------------------------- panels -- */
+
+.panel {
+  background: var(--plane);
+  border-right: 1px solid var(--hairline);
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.panel.detail {
+  border-right: none;
+  border-left: 1px solid var(--hairline);
+  width: 360px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.panel-head h1 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.panel-foot {
+  display: flex;
+  gap: 8px;
+  position: sticky;
+  bottom: -16px;
+  background: var(--plane);
+  padding: 12px 0 0;
+  border-top: 1px solid var(--hairline);
+}
+
+section {
+  margin-bottom: 20px;
+}
+
+h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--textMuted);
+  margin: 0 0 8px;
+}
+
+h3 {
+  font-size: 12px;
+  color: var(--textSecondary);
+  margin: 0 0 6px;
+}
+
+.subtle {
+  color: var(--textMuted);
+  font-size: 12px;
+  margin: 4px 0 0;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+/* ------------------------------------------------------------ controls -- */
+
+.field {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.field span {
+  display: block;
+  font-size: 11px;
+  color: var(--textMuted);
+  margin-bottom: 4px;
+}
+
+input[type="search"],
+select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--textPrimary);
+  font: inherit;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+.filter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.count {
+  color: var(--textMuted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--textSecondary);
+  border-color: var(--hairline);
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* -------------------------------------------------------------- legend -- */
+
+.legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--textSecondary);
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.legend-line {
+  width: 26px;
+  height: 0;
+  border-top: 2px solid var(--edgePermission);
+  flex: none;
+}
+
+.legend-line.legend-relation {
+  border-top: 2px dashed var(--edgeRelation);
+}
+
+
+.mark {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border-radius: 3px;
+}
+
+.legend-pill {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+  color: var(--textSecondary);
+  white-space: nowrap;
+  flex: none;
+}
+
+
+/* --------------------------------------------------------------- stats -- */
+
+.stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.stats.wide {
+  margin-bottom: 16px;
+}
+
+.stats dt {
+  font-size: 11px;
+  color: var(--textMuted);
+}
+
+.stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.warn {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-left: 2px solid var(--danger);
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: 0 4px 4px 0;
+}
+
+.error {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border: 1px solid var(--danger);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+/* -------------------------------------------------------------- canvas -- */
+
+.stage {
+  position: relative;
+  background: var(--surface);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.flow-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+
+.hint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  font-size: 11px;
+  color: var(--textMuted);
+  pointer-events: none;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  padding: 40px;
+  color: var(--textSecondary);
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+.empty code {
+  display: inline-block;
+  background: var(--raised);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin: 4px 2px 0;
+}
+
+/* -------------------------------------------------------------- detail -- */
+
+.detail-title {
+  font-size: 14px;
+  margin: 0;
+  color: var(--textPrimary);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.grants,
+.neighbors {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.grants li,
+.neighbors li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.pill {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  color: var(--textSecondary);
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.body {
+  font-size: 13px;
+  color: var(--textSecondary);
+  white-space: pre-wrap;
+}
+
+.payload {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 11px;
+  overflow-x: auto;
+  max-height: 320px;
+  margin: 0;
+}
+
+
+/* ---------------------------------------------------- flow: clusters ---- */
+
+/* A source's name above its trees. No band, no container — the separation is
+   the gap between the trees, and this just says which is which. */
+.cluster-label {
+  display: flex;
+  /* Bottom-aligned inside its box, so the counter-scaled text at overview zoom
+     grows up into the empty space above the trees rather than down onto the
+     first block. */
+  align-items: flex-end;
+  height: 100%;
+  gap: 8px;
+  padding: 0 2px 6px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.cluster-mark {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.cluster-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--textPrimary);
+  letter-spacing: 0.01em;
+}
+
+.cluster-count {
+  font-size: 12px;
+  color: var(--textMuted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ----------------------------------------------------- flow: blocks ----- */
+
+.block {
+  /* Sized by React Flow per node — a stacked leaf is narrower than the block
+     it hangs under — so the element just fills what it is given. */
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  /* The source's colour as a spine, not a fill: a saturated block behind text
+     costs legibility for an identity the type line already carries. */
+  border-left: 4px solid var(--accent);
+  cursor: pointer;
+  overflow: visible;
+  position: relative;
+}
+
+.block:hover {
+  border-color: var(--textMuted);
+}
+
+/* --------------------------------------------------------------- focus -- */
+
+/*
+ * Clicking a node turns the canvas into a view of that node's connections. The
+ * selection and what it touches grow and brighten; everything else drops back
+ * far enough to read as ground rather than as content. The growth is a
+ * transform on the block, not a change to the layout, so nothing moves.
+ */
+.block.is-focus-primary {
+  transform: scale(1.28);
+  z-index: 6;
+  border-color: var(--accent);
+  border-width: 2px;
+  background: color-mix(in srgb, var(--accent) 22%, var(--raised));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.block.is-focus-near {
+  transform: scale(1.14);
+  z-index: 5;
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--hairline));
+  background: color-mix(in srgb, var(--accent) 12%, var(--raised));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.block.is-focus-primary .block-label,
+.block.is-focus-near .block-label {
+  color: var(--textPrimary);
+}
+
+.block.is-dimmed {
+  /* Context, not content. Low enough that the focused pair reads instantly,
+     high enough that the shape of the forest is still there to place them in. */
+  opacity: 0.18;
+  filter: saturate(0.55);
+}
+
+.block.is-selected {
+  border-color: var(--accent);
+}
+
+.block.is-deleted {
+  border-style: dashed;
+}
+
+.block.is-deleted .block-label {
+  text-decoration: line-through;
+  color: var(--textMuted);
+}
+
+.block.is-unmaterialized {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--raised),
+    var(--raised) 6px,
+    var(--plane) 6px,
+    var(--plane) 12px
+  );
+}
+
+.block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.block-type {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.block-type.standalone {
+  display: inline-block;
+  margin-bottom: 6px;
+}
+
+.block-grants {
+  font-size: 9.5px;
+  color: var(--textSecondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.block-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--textPrimary);
+  line-height: 1.25;
+  /* Two lines, then ellipsis: a Slack message has no name and its body is the
+     only thing identifying it. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Hangs off the bottom edge, on the trunk, where a tree control belongs. */
+.block-toggle {
+  position: absolute;
+  bottom: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--textSecondary);
+  cursor: pointer;
+  z-index: 3;
+}
+
+.block-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------ flow: level of detail -- */
+
+/*
+ * Zoomed out, a block is a few pixels of colour and text is noise. These rules
+ * strip it back to the mark, so the shape of the forest survives at any scale.
+ */
+.lod-far .block-type,
+.lod-far .block-grants,
+.lod-far .block-label,
+.lod-far .block-toggle {
+  display: none;
+}
+
+.lod-far .block {
+  background: color-mix(in srgb, var(--accent) 55%, var(--raised));
+  border-color: transparent;
+  border-left-width: 4px;
+}
+
+/* Zoomed out the blocks are marks, so focus has to grow them harder to be
+   legible at all — and the label comes back for the two that matter. */
+.lod-far .block.is-focus-primary {
+  transform: scale(2.6);
+}
+
+.lod-far .block.is-focus-near {
+  transform: scale(1.9);
+}
+
+.lod-far .block.is-focus-primary .block-label,
+.lod-far .block.is-focus-near .block-label,
+.lod-mid .block.is-focus-primary .block-label,
+.lod-mid .block.is-focus-near .block-label {
+  display: -webkit-box;
+  font-size: 11px;
+}
+
+.lod-mid .block-type,
+.lod-mid .block-grants {
+  display: none;
+}
+
+.lod-mid .block-label {
+  font-size: 13px;
+  -webkit-line-clamp: 3;
+}
+
+/* Counter-scaled by hand: a label sized in graph units disappears at overview
+   zoom, and the one thing that must survive an overview is which forest is
+   which. */
+.lod-mid .cluster-name {
+  font-size: 30px;
+}
+
+.lod-mid .cluster-count,
+.lod-mid .cluster-mark {
+  font-size: 22px;
+}
+
+.lod-far .cluster-name {
+  font-size: 84px;
+}
+
+.lod-far .cluster-count {
+  font-size: 56px;
+}
+
+.lod-far .cluster-mark {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+}
+
+.edge-label {
+  position: absolute;
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.lod-far .edge-label {
+  display: none;
+}
+
+.flow-panel {
+  display: flex;
+  gap: 6px;
+}
+
+.flow-panel button {
+  background: var(--raised);
+}
+
+/* React Flow's own handles carry no meaning here — edges come from the data. */
+.react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.react-flow__node {
+  cursor: default;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+/* ------------------------------------------------------ detail extras --- */
+
+.detail-empty {
+  display: grid;
+  place-content: center;
+  text-align: center;
+  padding: 32px;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.fields {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.fields > div {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.fields dt {
+  font-size: 11px;
+  color: var(--textMuted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.fields dd {
+  margin: 0;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wrap {
+  overflow-wrap: anywhere;
+}
+
+.block-sub {
+  display: block;
+  font-size: 10.5px;
+}
+
+
+/* ---------------------------------------------------------------- chat -- */
+
+.chat {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 0;
+  background: var(--surface);
+}
+
+.chat-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 28px 16px;
+  border-bottom: 1px solid var(--hairline);
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.chat-head h1 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.chat-head .subtle {
+  max-width: 62ch;
+}
+
+.identity {
+  min-width: 300px;
+}
+
+.identity .field {
+  margin-bottom: 4px;
+}
+
+.chat-log {
+  overflow-y: auto;
+  padding: 24px 28px;
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.chat-empty {
+  padding: 48px 0;
+  text-align: center;
+}
+
+.examples {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.example {
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  color: var(--textSecondary);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.example:hover {
+  border-color: var(--accent);
+  color: var(--textPrimary);
+}
+
+.turn {
+  margin-bottom: 28px;
+}
+
+.question {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 12px;
+}
+
+.question p {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--textPrimary);
+}
+
+.question .subtle {
+  white-space: nowrap;
+  margin: 0;
+}
+
+.answer p {
+  margin: 0 0 10px;
+  color: var(--textSecondary);
+  line-height: 1.6;
+}
+
+.answer-list {
+  margin: 0 0 10px;
+  padding-left: 20px;
+  color: var(--textSecondary);
+  line-height: 1.6;
+}
+
+.answer.pending {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--textMuted);
+  font-size: 13px;
+}
+
+.pulse {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none; opacity: 0.7; }
+}
+
+.citations {
+  margin: 14px 0 0;
+  border-top: 1px solid var(--hairline);
+  padding-top: 10px;
+}
+
+.citations h3 {
+  margin-bottom: 6px;
+}
+
+.citations ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.citations li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.native {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+
+.run-stats {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--textMuted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-form {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 16px 28px 20px;
+  border-top: 1px solid var(--hairline);
+  background: var(--plane);
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.chat-form textarea {
+  flex: 1;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--textPrimary);
+  font: inherit;
+  line-height: 1.5;
+}
+
+.chat-form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.chat-form button {
+  padding: 10px 20px;
+}
+
+/* --------------------------------------------------------------- trace -- */
+
+.pending-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--textSecondary);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.trace {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 2px;
+  border-left: 2px solid var(--hairline);
+  font-size: 12px;
+}
+
+.trace li {
+  padding: 3px 0 3px 12px;
+  color: var(--textMuted);
+}
+
+.trace-turn {
+  color: var(--textSecondary);
+  font-weight: 600;
+  margin-top: 6px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+}
+
+.trace-thinking {
+  color: var(--textSecondary);
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.trace-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.trace-tool code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--textMuted);
+  overflow-wrap: anywhere;
+}
+
+.trace-result {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.trace-result.is-error {
+  color: var(--danger);
+}
+
+.trace-empty {
+  margin: 0;
+}
+
+.trace-details {
+  margin-top: 12px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+}
+
+.trace-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--textMuted);
+}
+
+.trace-details summary:hover {
+  color: var(--textPrimary);
+}
+
+.trace-details .trace {
+  margin-top: 8px;
+}
+
+.inline-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* ---------------------------------------------------------------- plan -- */
+
+/* Set apart from the prose above it deliberately: everything inside this box
+   is about to change something outside this system, and it should not read as
+   more of the answer. */
+.plan {
+  margin: 14px 0 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--hairline));
+  border-radius: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.plan h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.plan-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plan-step {
+  border-top: 1px solid var(--hairline);
+  padding-top: 10px;
+}
+
+.plan-steps > .plan-step:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.plan-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.plan-summary,
+.plan-why {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--textSecondary);
+}
+
+.plan-params {
+  margin-top: 8px;
+}
+
+.plan-param-label {
+  font-size: 11px;
+  color: var(--textMuted);
+  margin-bottom: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* The text that will actually be written, whole. Wrapped rather than scrolled:
+   a reader approving a message should not have to drag a scrollbar to find out
+   how it ends. */
+.plan-text {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.plan-scalars {
+  margin: 0;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.plan-as {
+  font-size: 11px;
+}
+
+.plan-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.plan-link {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.plan-done {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--textSecondary);
+}
+
+.danger-pill {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.status-ok {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.status-error {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.status-skipped,
+.status-checked {
+  color: var(--textMuted);
+}

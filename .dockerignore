@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+.venv
+.claude
+.ruff_cache
+.vscode
+__pycache__/
+*.pyc
+*.md
+docker-compose.yml
+web/node_modules
+web/dist
+# Service account keys live in the project root; the image never needs them
+# (the Dockerfile copies only requirements.txt and src/), and they reach the
+# poller as a bind mount at runtime.
+*.json

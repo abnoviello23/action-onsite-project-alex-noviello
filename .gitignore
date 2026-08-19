@@ -1,0 +1,29 @@
+.env
+.env.*
+!.env.example
+!.env-demo
+
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Service account keys live in the project root. Scoped so
+# docker/no-drive-key.json (the compose fallback placeholder) stays tracked.
+/*.json
+/docker/*.json
+!/docker/no-drive-key.json
+
+.claude/
+.vscode/settings.json
+
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db

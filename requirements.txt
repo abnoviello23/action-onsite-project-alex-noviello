@@ -1,0 +1,15 @@
+# Runtime deps for the local stack. Connectors talk to their APIs over httpx
+# rather than pulling in a vendor SDK for what is a handful of endpoints —
+# slack_sdk is not here for that reason, and google-api-python-client is not
+# here because it is synchronous and would block the poller's event loop.
+#
+# google-auth is used only to sign the service account JWT; its own transports
+# depend on `requests`, which is deliberately not installed.
+asyncpg==0.30.0
+redis==5.2.1
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pydantic==2.10.4
+websockets==14.1
+google-auth==2.56.3

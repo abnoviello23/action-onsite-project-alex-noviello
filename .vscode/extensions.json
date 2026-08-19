@@ -1,0 +1,13 @@
+{
+	// Cursor Python stack for this workspace.
+	// Cursor Pyright replaces Pylance (which is not supported in Cursor).
+	"recommendations": [
+		"ms-python.python",
+		"anysphere.cursorpyright",
+		"ms-python.debugpy",
+		"charliermarsh.ruff"
+	],
+	"unwantedRecommendations": [
+		"ms-python.vscode-pylance"
+	]
+}

@@ -1,0 +1,6 @@
+# CPU-only. torch is installed from the CPU wheel index in embed.Dockerfile
+# *before* this file, so sentence-transformers does not pull a CUDA build.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+sentence-transformers==3.3.1
